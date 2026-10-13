@@ -1,0 +1,72 @@
+# The watchdog trigger, and the alert path.
+#
+# WHY THE TRIGGER LIVES HERE
+#   Vercel's free tier allows a scheduled job only ONCE PER DAY, which is too slow for a watchdog. It
+#   cannot run on the Mac either, because the Mac is one of the things being watched -- a trigger on
+#   the watched machine cannot report that machine's death. GitHub is independent of both the Mac and
+#   the Cloudflare Worker, so it is the only one of the three that can notice either of them failing.
+#
+# WHY THE ALERT NEEDS NO EMAIL SERVICE
+#   The previous design needed an email API key. It does not need one: GitHub sends a failure
+#   notification to the repo owner by default. So this workflow is written to FAIL when the watchdog
+#   reports a problem -- the failure IS the alert. That removes an account, a key, and a dependency.
+#
+#   The consequence to be aware of: GitHub throttles scheduled workflows on inactive repositories and
+#   may notify only on the FIRST failure of a run sequence, not every 15 minutes. That is the right
+#   behaviour for an alert anyway -- one message when something breaks, not ninety-six a day.
+#
+# TIMING
+#   Scheduled runs are queued, not guaranteed, and can be several minutes late under load. At a
+#   15-minute cadence that is fine. The Vercel daily cron is kept as a backstop for the case where
+#   this workflow never runs at all.
+
+name: watchdog
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: watchdog
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Ask the watchdog to check
+        env:
+          WATCHDOG_URL: ${{ secrets.WATCHDOG_URL }}
+        run: |
+          set -euo pipefail
+          url="${WATCHDOG_URL:-https://pm-watchdog.vercel.app}"
+          raw=$(curl -sS --max-time 60 -w '\n%{http_code}' "$url/api/check")
+          code=$(printf '%s' "$raw" | tail -n1)
+          body=$(printf '%s' "$raw" | sed '$d')
+          echo "$body"
+
+          if [ "$code" != "200" ]; then
+            echo "::error title=The watchdog is unreachable::HTTP $code from $url/api/check. The watchdog itself may be down, which means nothing is currently watching anything."
+            exit 1
+          fi
+
+          ok=$(printf '%s' "$body" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("ok"))')
+
+          if [ "$ok" != "True" ]; then
+            # Print the problems as an annotation so the reason is visible without opening the log.
+            printf '%s' "$body" | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+for p in d.get("problems", []):
+    print(f"::error title=Needs attention::{p}")
+'
+            echo "::error title=Something needs you::The control panel reported a problem. See the annotations above for which job or site, and check $url/api/status."
+            exit 1
+          fi
+
+          echo "All clear: $body"

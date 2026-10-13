@@ -1,0 +1,7 @@
+{
+  "name": "pm-watchdog",
+  "version": "1.0.0",
+  "private": true,
+  "description": "External watchdog for the marketing control panel. Runs on Vercel because the thing being watched is the Mac, and a Mac cannot report its own death.",
+  "type": "module"
+}
