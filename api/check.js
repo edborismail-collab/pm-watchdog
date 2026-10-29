@@ -33,7 +33,11 @@
  */
 
 const WORKER = process.env.WORKER_URL || 'https://panel.pmforcontractors.com';
-const TOKEN = process.env.PUSH_TOKEN || '';
+// LEAST PRIVILEGE. This used to read /api/all with the Mac's PUSH_TOKEN, which also grants the
+// approval queue, every draft and the whole marketing snapshot - and the ability to overwrite the
+// snapshot. A watchdog needs three facts: the worker answered, no job is late, no site is broken.
+// /api/watch returns exactly that, and WATCHDOG_TOKEN can reach nothing else.
+const TOKEN = process.env.WATCHDOG_TOKEN || '';
 // 24h at 15-minute cadence: alert once, then stay quiet for 2 hours unless it clears and returns.
 const COOLDOWN_MS = Number(process.env.ALERT_COOLDOWN_MS || 2 * 60 * 60 * 1000);
 
@@ -41,7 +45,7 @@ let lastAlert = 0;
 let lastKey = '';
 
 async function fetchState() {
-  const r = await fetch(`${WORKER}/api/all`, {
+  const r = await fetch(`${WORKER}/api/watch`, {
     headers: TOKEN ? { authorization: `Bearer ${TOKEN}` } : {},
     cache: 'no-store',
   });
@@ -81,8 +85,8 @@ export default async function handler(req, res) {
   if (state) {
     const overdue = Number(state.overdue || 0);
     const broken = Number(state.broken || 0);
-    out.jobs = (state.jobs || []).length;
-    out.sites = (state.sites || []).length;
+    out.jobs = (state.counts && state.counts.jobs) || (state.jobs || []).length;
+    out.sites = (state.counts && state.counts.sites) || (state.sites || []).length;
 
     // A job that has gone quiet is the signature of the Mac having stopped, since the Mac is what
     // pings. Name the jobs rather than only counting them: "2 overdue" is not actionable, the names are.
